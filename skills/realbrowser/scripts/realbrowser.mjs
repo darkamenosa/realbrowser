@@ -981,13 +981,8 @@ async function readyDaemonStateFromFile(stateFile, context) {
   }
   if (existing.port && existing.token && processAlive(existing.pid)) {
     try {
-      const health = await httpRequest({
-        method: "GET",
-        url: `http://127.0.0.1:${existing.port}/health`,
-        headers: { authorization: `Bearer ${existing.token}` },
-        timeoutMs: 1200,
-      });
-      if (health.statusCode === 200) return existing;
+      const health = await daemonHealth(existing, 1200);
+      if (daemonReadyForContext(health, context)) return existing;
     } catch {}
   }
   if (existing.starting) {
@@ -1039,16 +1034,18 @@ async function reusableDaemonForContext(context, preferredStateFile = "") {
     if (!state || state.version !== VERSION || state.runtimeSchema !== STATE_SCHEMA_VERSION || !processAlive(state.pid)) continue;
     if (!browserEndpointsMatch(contextBrowserUrl(state), browserUrl)) continue;
     try {
-      const health = await httpRequest({
-        method: "GET",
-        url: `http://127.0.0.1:${state.port}/health`,
-        headers: { authorization: `Bearer ${state.token}` },
-        timeoutMs: 1200,
-      });
-      if (health.statusCode === 200) return state;
+      const health = await daemonHealth(state, 1200);
+      if (daemonReadyForContext(health, context)) return state;
     } catch {}
   }
   return null;
+}
+
+function daemonReadyForContext(health, context = {}) {
+  if (health?.ok !== true || health?.cdpReady !== true) return false;
+  const browserUrl = contextBrowserUrl(context);
+  if (browserUrl && health.browserUrl && !browserEndpointsMatch(health.browserUrl, browserUrl)) return false;
+  return true;
 }
 
 function daemonStartTimeout(context = {}) {
@@ -4393,12 +4390,12 @@ async function stopDaemonState(state) {
   try { process.kill(state.pid, "SIGKILL"); } catch {}
 }
 
-async function daemonHealth(state) {
+async function daemonHealth(state, timeoutMs = 1000) {
   const response = await httpRequest({
     method: "GET",
     url: `http://127.0.0.1:${state.port}/health`,
     headers: { authorization: `Bearer ${state.token}` },
-    timeoutMs: 1000,
+    timeoutMs,
   });
   if (response.statusCode !== 200) throw new Error(`health HTTP ${response.statusCode}`);
   return JSON.parse(response.body);
@@ -9082,6 +9079,9 @@ async function runSelfTest() {
   assert(contextFlagsFromString("session:check").anonymous === true, "session context parser");
   assert(endpointBrowserUrl({ httpUrl: "http://127.0.0.1:9222", wsUrl: "ws://127.0.0.1:9222/devtools/browser/mock" }) === "ws://127.0.0.1:9222/devtools/browser/mock", "direct WS endpoint is preferred over HTTP discovery root");
   assert(browserEndpointsMatch("http://127.0.0.1:9222", "ws://127.0.0.1:9222/devtools/browser/mock"), "HTTP and direct WS endpoints match by origin");
+  assert(daemonReadyForContext({ ok: true, cdpReady: true, browserUrl: "ws://127.0.0.1:9222/devtools/browser/mock" }, { browserUrl: "http://127.0.0.1:9222" }), "ready daemon health matches endpoint context");
+  assert(!daemonReadyForContext({ ok: true, cdpReady: false, browserUrl: "ws://127.0.0.1:9222/devtools/browser/mock" }, { browserUrl: "http://127.0.0.1:9222" }), "daemon health rejects closed CDP socket");
+  assert(!daemonReadyForContext({ ok: true, cdpReady: true, browserUrl: "ws://127.0.0.1:9223/devtools/browser/mock" }, { browserUrl: "http://127.0.0.1:9222" }), "daemon health rejects mismatched endpoint context");
   assert(daemonConnectionKey({ key: "profile:chrome:Default", browserUrl: "ws://127.0.0.1:9222/devtools/browser/mock" }) === daemonConnectionKey({ key: "profile:chrome:Profile 1", browserUrl: "ws://127.0.0.1:9222/devtools/browser/mock" }), "same browser endpoint shares one daemon across profile contexts");
   const relaunch = parseCli(["profile", "relaunch", "chrome:Default", "--confirm"]);
   assert(relaunch.group === "profile" && relaunch.command === "relaunch" && relaunch.flags.confirm === true, "profile relaunch parser");
