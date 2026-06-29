@@ -8,7 +8,9 @@ description: Use for fast target-first local Chrome/Chromium browser control wit
 Use `realbrowser` when a task needs the user's local browser state or a fast
 managed browser. Target-first: resolve or create one tab target, then pass
 `-t <label>` or `--handle` on every read, action, screenshot, console,
-network, state, dialog, performance, download, or export command.
+network, state, dialog, performance, download, or export command. Pointer
+drag/drop is available through `action drag` with refs/selectors or viewport
+CSS pixel coordinates.
 
 The design is site-agnostic and OS-portable. Do not encode site names, UI
 copy, or language-specific picker labels into the workflow. Use generic
@@ -276,8 +278,8 @@ OS-launch an already-running browser-scoped profile.
 ## Common Workflows
 
 Minimal skeletons live in `references/workflows.md` (form/upload,
-console/network, screenshots, PDF, anonymous, responsive, infinite feeds,
-stateful-SPA recovery). Open it when the task needs detail.
+console/network, screenshots, drag/drop, PDF, anonymous, responsive, infinite
+feeds, stateful-SPA recovery). Open it when the task needs detail.
 
 ## References
 

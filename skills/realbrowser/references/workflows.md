@@ -9,6 +9,7 @@
 - [Repeated Content And Huge Pages](#repeated-content-and-huge-pages)
 - [ARIA Tree](#aria-tree-primary-interaction-reader)
 - [Scrolling](#scrolling)
+- [Drag And Drop](#drag-and-drop)
 - [Form, Upload, Submit](#form-upload-submit)
 - [Console And Network](#console-and-network)
 - [Screenshots, Download, PDF](#screenshots-download-pdf)
@@ -320,7 +321,8 @@ screenshots. Reserve screenshots for visual-only state (image previews, layout
 shifts, canvas rendering).
 
 Refs from `read tree` (`b1`, `l1`, `e1`) work with all action commands (`action
-click`, `action fill`, `action type`, `action submit`, `action scroll`).
+click`, `action fill`, `action type`, `action submit`, `action scroll`,
+`action drag`).
 
 For large pages, combine flags: `read tree -i -c -d 3 --selector main` gives
 the interactive elements in the main landmark, limited to depth 3. This is
@@ -349,6 +351,22 @@ Scroll the window or a specific element. Directions: `up`, `down`, `left`,
 `right`. Default: `down 500`. Use `--selector` or a ref to scroll a container
 instead of the page window. Verify scroll position with `read tree --diff` after
 scrolling.
+
+## Drag And Drop
+
+```bash
+realbrowser action drag -t app b1 --to b2
+realbrowser action drag -t app b1 --to-point 320,180
+realbrowser action drag -t app --from-point 20,40 --to-point 300,40
+realbrowser action drag -t app b1 --by 80,0 --steps 16 --duration 400
+```
+
+`action drag` performs a pointer drag and drops by releasing at the destination.
+Use refs/selectors for structural targets and `--to-point` / `--from-point` for
+canvas, dock, resize, or other coordinate-driven UI. Coordinates are viewport CSS
+pixels, matching CDP screenshots. Keep drag workflows target-bound and generic:
+read the tree or screenshot to identify the source, then drag by ref or explicit
+point; do not bake app-specific selectors into shared flows.
 
 ## Form, Upload, Submit
 

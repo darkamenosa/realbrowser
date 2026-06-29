@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const STATE_SCHEMA_VERSION = "owner-lease-1";
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const IS_WINDOWS = process.platform === "win32";
@@ -86,7 +86,7 @@ const GROUPS = {
   handle: ["create", "list", "release"],
   read: ["observe", "size", "tree", "snapshot", "query", "query-selector", "items", "item", "text", "html", "links", "forms", "url", "is", "autocomplete", "overlay"],
   wait: ["ready", "selector", "text", "url", "load", "network"],
-  action: ["state", "root", "click", "fill", "type", "press", "key", "upload", "submit", "hover", "select", "scroll"],
+  action: ["state", "root", "click", "fill", "type", "press", "key", "upload", "submit", "hover", "select", "scroll", "drag"],
   screenshot: ["capture", "full", "area", "device", "responsive"],
   console: ["list", "get", "clear", "capture"],
   network: ["list", "get", "body", "export", "clear", "capture"],
@@ -142,6 +142,7 @@ const VALUE_FLAGS = new Set([
   "--handle", "--handle-out", "--handle-name", "--browser", "--browser-url",
   "--session", "--label", "--timeout", "--max-chars", "--limit", "--selector",
   "--root", "--input", "--input-ref", "--element", "--trigger", "--trigger-ref", "--text", "--value-file", "--from", "--return", "--trace",
+  "--to", "--to-ref", "--to-selector", "--to-point", "--from-point", "--by", "--button", "--steps", "--hold",
   "--devices", "--viewport", "--format", "--quality", "--max-side", "--max-bytes",
   "--dir", "--download-dir", "--filter", "--method", "--status", "--type",
   "--include", "--request-file", "--response-file", "--binary", "--header",
@@ -424,6 +425,7 @@ function validateActionArgs(command, args = [], flags = {}) {
   if (command === "type" && !(args.length || flags.stdin || flags.valueFile)) throw usage("action type requires <text> or --stdin/--value-file");
   if ((command === "press" || command === "key") && !args.join(" ")) throw usage(`action ${command} requires <key>`);
   if (command === "upload") validateUploadArgs(args, flags);
+  if (command === "drag") validateDragArgs(args, flags);
 }
 
 function validateUploadArgs(args = [], flags = {}) {
@@ -432,6 +434,17 @@ function validateUploadArgs(args = [], flags = {}) {
   const files = args.filter((arg) => !arg.startsWith("-"));
   if (!files.length) throw usage("action upload requires <file...>");
   if (input && trigger) throw usage("action upload cannot combine --input-ref/--element with --trigger-ref");
+}
+
+function validateDragArgs(args = [], flags = {}) {
+  const fromPoint = flags.fromPoint;
+  const fromTarget = fromPoint ? "" : (args[0] || flags.ref || flags.from);
+  const toTarget = args[fromPoint && !flags.to && !flags.toRef && !flags.toSelector && !flags.toPoint && !flags.by ? 0 : 1] ||
+    flags.to || flags.toRef || flags.toSelector;
+  const destinationCount = [toTarget, flags.toPoint, flags.by].filter(Boolean).length;
+  if (!fromPoint && !fromTarget) throw usage("action drag requires <from-ref|selector> or --from-point <x,y>");
+  if (destinationCount < 1) throw usage("action drag requires --to <ref|selector>, --to-point <x,y>, --by <dx,dy>, or a second positional target");
+  if (destinationCount > 1) throw usage("action drag accepts only one destination: --to, --to-point, or --by");
 }
 
 function validateNetworkArgs(command, args = [], flags = {}) {
@@ -3540,6 +3553,56 @@ BrowserDaemon.prototype.action = async function action(command, args, flags) {
     const postState = command === "submit" ? await sleep(500).then(() => this.callFunction(tab.targetId, actionPreflightFunction, [])).catch(() => null) : undefined;
     return result({ target: tab, preflight, postState, ...payload, elementText: payload.text, text: `${command === "submit" ? "submitted" : "clicked"} ${payload.ref || ref || payload.text || ""}`.trim() });
   }
+  if (command === "drag") {
+    const spec = dragArgs(args, flags, tab.targetId, this);
+    let from;
+    let to;
+    try {
+      from = spec.fromPoint
+        ? { point: spec.fromPoint, entry: { center: spec.fromPoint, kind: "point" } }
+        : await this.callFunction(tab.targetId, dragPointFunction, [spec.fromSelector, {
+          ...actionOptions(args, flags),
+          role: "drag source",
+          scroll: true,
+          requireEnabled: true,
+          requirePointer: true,
+          requireTopmost: true,
+        }], { timeoutMs: flags.timeout || DEFAULT_TIMEOUT });
+      if (spec.by) {
+        to = { point: { x: from.point.x + spec.by.x, y: from.point.y + spec.by.y }, entry: { center: { x: from.point.x + spec.by.x, y: from.point.y + spec.by.y }, kind: "delta" } };
+      } else if (spec.toPoint) {
+        to = { point: spec.toPoint, entry: { center: spec.toPoint, kind: "point" } };
+      } else {
+        to = await this.callFunction(tab.targetId, dragPointFunction, [spec.toSelector, {
+          ...actionOptions(args, flags),
+          role: "drop target",
+          scroll: false,
+          requireEnabled: false,
+          requirePointer: false,
+          requireTopmost: false,
+        }], { timeoutMs: flags.timeout || DEFAULT_TIMEOUT });
+      }
+      await dispatchMouseDrag(this, tab.targetId, from.point, to.point, spec);
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw new CliError(cleanActionErrorMessage(error), {
+        code: "action_guard",
+        exitCode: 5,
+        next: ["realbrowser action state -t <target> --root active --compact"],
+      });
+    }
+    return result({
+      text: `dragged ${spec.fromLabel} to ${spec.toLabel}`,
+      target: tab,
+      preflight,
+      from: { ...from.entry, point: from.point },
+      to: { ...to.entry, point: to.point },
+      steps: spec.steps,
+      duration: spec.duration,
+      hold: spec.hold,
+      button: spec.button,
+    });
+  }
   if (command === "fill" || command === "select") {
     const ref = args[0] || flags.ref;
     const value = valueFromArgs(args.slice(args[0] ? 1 : 0), flags);
@@ -5932,6 +5995,21 @@ function clickFunction(selector, opts = {}) {
   return chosen.entry;
 }
 
+function dragPointFunction(selector, opts = {}) {
+  const root = opts.activeRoot || opts.root === "active" ? activeRootElementSourceEval() : document;
+  const el = root.querySelector(selector) || pierceQuerySelector(root, selector) || pierceQuerySelector(document, selector);
+  if (!el) throw new Error(`${opts.role || "drag point"} selector not found: ${selector}`);
+  const entry = preflightElement(el, { scroll: opts.scroll !== false });
+  const blockers = [];
+  if (!entry.visible) blockers.push("hidden");
+  if (!entry.inViewport) blockers.push("out-viewport");
+  if (opts.requireEnabled !== false && !entry.enabled) blockers.push("disabled");
+  if (opts.requirePointer !== false && !entry.pointerEnabled) blockers.push("no-pointer");
+  if (opts.requireTopmost !== false && !entry.topmost) blockers.push(entry.coveredBy ? `covered-by:${entry.coveredBy}` : "covered");
+  if (blockers.length) throw new Error(`${opts.role || "drag point"} is not usable (${blockers.join(",")})`);
+  return { point: entry.center, entry };
+}
+
 // Cheap page-state fingerprint. Used by the click auto-fallback path to
 // detect "click registered but page state unchanged" — the symptom that
 // portal popovers AND plain SPA route-swap buttons exhibit when CDP
@@ -7246,6 +7324,24 @@ async function dispatchMouseClick(daemon, targetId, x, y) {
   await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
 }
 
+async function dispatchMouseDrag(daemon, targetId, from, to, opts = {}) {
+  const button = opts.button || "left";
+  const buttons = opts.buttons || mouseButtonsFor(button);
+  const steps = opts.steps || 12;
+  const stepDelay = steps > 0 && opts.duration > 0 ? Math.floor(opts.duration / steps) : 0;
+  await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y, button: "none", buttons: 0, pointerType: "mouse" });
+  await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button, buttons, clickCount: 1, pointerType: "mouse" });
+  if (opts.hold > 0) await sleep(opts.hold);
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const x = from.x + (to.x - from.x) * t;
+    const y = from.y + (to.y - from.y) * t;
+    await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button, buttons, pointerType: "mouse" });
+    if (stepDelay > 0 && i < steps) await sleep(stepDelay);
+  }
+  await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button, buttons: 0, clickCount: 1, pointerType: "mouse" });
+}
+
 async function callAndDispatchMouseClickWithFileChooserGuard(daemon, targetId, selector, options = {}, opts = {}) {
   if (opts.allowFileDialog) {
     const payload = await daemon.callFunction(targetId, clickFunction, [selector, { ...options, allowFileDialog: true }], { timeoutMs: opts.timeoutMs || DEFAULT_TIMEOUT });
@@ -7416,6 +7512,60 @@ function actionOptions(args, flags) {
     bypassOverlay: Boolean(flags.bypassOverlay),
     requireChange: Boolean(flags.requireChange),
   };
+}
+
+function dragArgs(args, flags, targetId, daemon) {
+  const usingFromPoint = Boolean(flags.fromPoint);
+  const positionalDestination = args[usingFromPoint && !flags.to && !flags.toRef && !flags.toSelector && !flags.toPoint && !flags.by ? 0 : 1];
+  const fromToken = usingFromPoint ? "" : (args[0] || flags.ref || flags.from);
+  const toToken = positionalDestination || flags.to || flags.toRef || flags.toSelector || "";
+  const fromPoint = usingFromPoint ? parsePoint(flags.fromPoint, "--from-point") : null;
+  const toPoint = flags.toPoint ? parsePoint(flags.toPoint, "--to-point") : null;
+  const by = flags.by ? parsePoint(flags.by, "--by") : null;
+  if (!fromPoint && !fromToken) throw usage("action drag requires <from-ref|selector> or --from-point <x,y>");
+  if ([toToken, toPoint, by].filter(Boolean).length !== 1) throw usage("action drag accepts exactly one destination: --to, --to-point, --by, or a second positional target");
+  const button = parseMouseButton(flags.button || "left");
+  return {
+    fromSelector: fromPoint ? "" : daemon.selectorFor(targetId, fromToken),
+    toSelector: toToken ? daemon.selectorFor(targetId, toToken) : "",
+    fromPoint,
+    toPoint,
+    by,
+    fromLabel: fromPoint ? `${fromPoint.x},${fromPoint.y}` : String(fromToken),
+    toLabel: by ? `by ${by.x},${by.y}` : toPoint ? `${toPoint.x},${toPoint.y}` : String(toToken),
+    button,
+    buttons: mouseButtonsFor(button),
+    steps: boundedInteger(flags.steps || 12, "steps", 1, 200),
+    duration: boundedInteger(flags.duration || 250, "duration", 0, 60_000),
+    hold: boundedInteger(flags.hold || 50, "hold", 0, 10_000),
+  };
+}
+
+function parsePoint(value, label) {
+  const match = String(value || "").trim().match(/^(-?\d+(?:\.\d+)?)\s*[,x:]\s*(-?\d+(?:\.\d+)?)$/i);
+  if (!match) throw usage(`${label} must be "x,y" in viewport CSS pixels`);
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw usage(`${label} must contain finite numbers`);
+  return { x, y };
+}
+
+function boundedInteger(value, label, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw usage(`${label} must be a number`);
+  const integer = Math.round(number);
+  if (integer < min || integer > max) throw usage(`${label} must be between ${min} and ${max}`);
+  return integer;
+}
+
+function parseMouseButton(value) {
+  const button = String(value || "left").toLowerCase();
+  if (!["left", "middle", "right"].includes(button)) throw usage("button must be left, middle, or right");
+  return button;
+}
+
+function mouseButtonsFor(button) {
+  return button === "left" ? 1 : button === "right" ? 2 : 4;
 }
 
 function waitReadyOptions(args, flags, timeout = DEFAULT_TIMEOUT) {
@@ -8921,6 +9071,10 @@ All actions require -t/--target or --handle.
   action type -t app e1 "hello"
   action type -t app --stdin
   action press -t app Escape
+  action drag -t app b1 --to b2
+  action drag -t app b1 --to-point 320,180
+  action drag -t app --from-point 20,40 --to-point 300,40
+  action drag -t app b1 --by 80,0 --steps 16 --duration 400
   action upload -t app --root active --input-ref e2 ~/Downloads/file.png
   action upload -t app --root active --trigger-ref b7 ~/Downloads/file.png
   action submit -t app --root active --text "Submit"
@@ -8937,6 +9091,11 @@ All actions require -t/--target or --handle.
 
   Scroll scrolls the window or a specific element. Directions: up/down/left/right.
   Default: down 500. Use --selector or a ref to scroll a container.
+
+  Drag performs a pointer drag and drops by releasing at the destination. Sources
+  and destinations are viewport CSS pixels or current refs/selectors. Use
+  --to <ref|selector>, --to-point <x,y>, or --by <dx,dy>. Options:
+  --steps <n>, --duration <ms>, --hold <ms>, --button left|middle|right.
 
   action state --screenshot captures the visible active root/viewport. Use
   screenshot area/full only when a tall artifact is explicitly needed.
@@ -9158,6 +9317,15 @@ async function runSelfTest() {
   assert(looksLikeActionTargetToken("b1") && looksLikeActionTargetToken("selector:button") && !looksLikeActionTargetToken("Submit"), "action target token classifier");
   const submitText = parseCli(["action", "submit", "-t", "app", "Submit"]);
   assert(submitText.command === "submit" && submitText.args[0] === "Submit", "submit label parser");
+  const dragElement = parseCli(["action", "drag", "-t", "app", "b1", "--to", "b2", "--steps", "8", "--duration", "160"]);
+  assert(dragElement.command === "drag" && dragElement.args[0] === "b1" && dragElement.flags.to === "b2" && dragElement.flags.steps === "8", "drag element parser");
+  const dragPoint = parseCli(["action", "drag", "-t", "app", "--from-point", "10,20", "--to-point", "30,40"]);
+  assert(dragPoint.flags.fromPoint === "10,20" && dragPoint.flags.toPoint === "30,40", "drag point parser");
+  const dragDelta = parseCli(["action", "drag", "-t", "app", "b1", "--by", "25,-10"]);
+  assert(dragDelta.flags.by === "25,-10", "drag delta parser");
+  assertThrows(() => validateBeforeContext(parseCli(["action", "drag", "-t", "app", "b1"])), "action drag destination is validated before context attach");
+  assert(parsePoint("12.5,-3", "point").x === 12.5 && parsePoint("12.5,-3", "point").y === -3, "drag point parser accepts decimals");
+  assert(mouseButtonsFor(parseMouseButton("right")) === 2, "drag button parser");
   const keyAction = parseCli(["action", "key", "-t", "app", "Escape"]);
   assert(keyAction.command === "key" && keyAction.args[0] === "Escape", "key alias parser");
   const typeRef = parseCli(["action", "type", "-t", "app", "e1", "hello"]);
@@ -9355,6 +9523,12 @@ async function runSelfTest() {
     "pageStateSignature includes scrollHeight + xhrCount");
   assert(sigSrc.includes('"fetch"') && sigSrc.includes('"xmlhttprequest"'),
     "pageStateSignature filters resource entries to fetch + xmlhttprequest only");
+  assert(GROUPS.action.includes("drag"), "action group includes drag");
+  assert(typeof dragPointFunction === "function" && typeof dispatchMouseDrag === "function",
+    "drag helpers are defined");
+  const dragDispatchSrc = dispatchMouseDrag.toString();
+  assert(dragDispatchSrc.includes("mousePressed") && dragDispatchSrc.includes("mouseMoved") && dragDispatchSrc.includes("mouseReleased"),
+    "dispatchMouseDrag sends press/move/release CDP events");
   // 0.3.0: multi-OS browser executable resolver. We can't fs.existsSync the
   // candidate paths in a portable test, so we exercise the candidate
   // generator + the kind-filtering logic that drives findBrowserExecutable.

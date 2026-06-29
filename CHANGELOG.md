@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.1 - 2026-06-29
+
+Added:
+
+- `action drag` for target-bound pointer drag/drop using refs, selectors, or
+  viewport CSS pixel coordinates, with timing controls for steps, duration,
+  hold, and mouse button.
+
+Changed:
+
+- Documented drag/drop workflows in the skill guide, command reference, and
+  workflow reference.
+- The runtime and Claude plugin versions are now `0.3.1`.
+
+Validated:
+
+- `node --check skills/realbrowser/scripts/realbrowser.mjs`
+- `skills/realbrowser/scripts/realbrowser self-test`
+- `git diff --check`
+- Anonymous headless drag/drop smoke test against a temporary local `data:` page.
+
 ## 0.3.0 - 2026-05-14
 
 This release moves Realbrowser from `0.2.1` to `0.3.0`. The release goal is

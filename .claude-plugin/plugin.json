@@ -1,6 +1,6 @@
 {
   "name": "realbrowser",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Target-first local Chrome/Chromium browser control with signed-in profiles, labeled tabs, and guarded actions",
   "author": {
     "name": "Tuyen"

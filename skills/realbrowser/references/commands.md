@@ -41,7 +41,7 @@ tab         list/select/ensure/new/navigate/label/focus/close/handoff/resume
 handle      create/list/release
 read        observe/size/snapshot/query/query-selector/items/item/text/html/links/forms/url/is
 wait        ready/selector/text/url/load/network
-action      state/root/click/fill/type/press/key/upload/submit/hover/select
+action      state/root/click/fill/type/press/key/upload/submit/hover/select/drag
 screenshot  capture/full/area/device/responsive
 console     list/get/clear/capture
 network     list/get/body/export/clear/capture
@@ -254,6 +254,10 @@ action type -t app e1 "hello"
 action type -t app --stdin
 action press -t app Escape
 action key -t app Escape
+action drag -t app b1 --to b2
+action drag -t app b1 --to-point 320,180
+action drag -t app --from-point 20,40 --to-point 300,40
+action drag -t app b1 --by 80,0 --steps 16 --duration 400
 action state -t app --root active --compact --screenshot --annotate-refs
 action upload -t app --root active --input-ref e2 ~/Downloads/file.png
 action upload -t app --root active --trigger-ref b7 ~/Downloads/file.png
@@ -264,6 +268,12 @@ action submit -t app b4
 `type` can target a current ref/selector or type into the already focused
 element. `press` is the documented key form. `key` is an alias for agents that
 naturally use browser-action wording like "send key Escape".
+
+`drag` performs a target-bound pointer drag and drops by releasing at the
+destination. Sources and destinations are viewport CSS pixels or current
+refs/selectors. Use `--to <ref|selector>`, `--to-point <x,y>`, or `--by
+<dx,dy>`. Optional timing knobs are `--steps <n>`, `--duration <ms>`, `--hold
+<ms>`, and `--button left|middle|right`.
 
 `submit --text` is exact-match by default to avoid clicking wrapper controls that
 only contain the requested label as part of a longer label. If an exact label is
