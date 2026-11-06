@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+Added:
+
+- `action tap` presses and releases at a single point: `--point x,y`, a
+  positional `x,y`, or a ref/selector with an optional `--offset dx,dy`. It
+  supports `--count 1-3` (double tap/dblclick), `--hold`, `--button`, and
+  `--touch` for touch events. It replaces the zero-length `action drag`
+  workaround for video players and canvases. It reports the element hit at
+  the point, rejects points outside the viewport, and applies the same native
+  file chooser guard as `action click` (`--allow-file-dialog` to opt out).
+
 ## 0.3.1 - 2026-06-29
 
 Added:

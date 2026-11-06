@@ -322,7 +322,7 @@ shifts, canvas rendering).
 
 Refs from `read tree` (`b1`, `l1`, `e1`) work with all action commands (`action
 click`, `action fill`, `action type`, `action submit`, `action scroll`,
-`action drag`).
+`action drag`, `action tap`).
 
 For large pages, combine flags: `read tree -i -c -d 3 --selector main` gives
 the interactive elements in the main landmark, limited to depth 3. This is
@@ -367,6 +367,24 @@ canvas, dock, resize, or other coordinate-driven UI. Coordinates are viewport CS
 pixels, matching CDP screenshots. Keep drag workflows target-bound and generic:
 read the tree or screenshot to identify the source, then drag by ref or explicit
 point; do not bake app-specific selectors into shared flows.
+
+## Tap At A Point
+
+```bash
+realbrowser action tap -t app --point 320,180
+realbrowser action tap -t app 320,180 --count 2
+realbrowser action tap -t app e3 --offset 0,-40
+realbrowser action tap -t app --point 200,300 --touch
+```
+
+`action tap` presses and releases in place, with no movement. Use it in place of
+a zero-length drag for video players, canvases, and other coordinate UI. Take a
+screenshot to find the point (CSS pixels), or tap a ref and shift it with
+`--offset`. The tap lands on the topmost element at that point. `--count 2`
+sends a double tap, and `--touch` sends touch events for mobile-emulated pages.
+Check the `-> <element>` in the output to confirm what was hit. CDP input works
+through embedded iframes such as third-party video embeds, but in that case the
+reported hit is only the `iframe`.
 
 ## Form, Upload, Submit
 

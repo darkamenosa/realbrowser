@@ -9,8 +9,9 @@ Use `realbrowser` when a task needs the user's local browser state or a fast
 managed browser. Target-first: resolve or create one tab target, then pass
 `-t <label>` or `--handle` on every read, action, screenshot, console,
 network, state, dialog, performance, download, or export command. Pointer
-drag/drop is available through `action drag` with refs/selectors or viewport
-CSS pixel coordinates.
+drag/drop is available through `action drag`, and a single in-place tap
+through `action tap`, both with refs/selectors or viewport CSS pixel
+coordinates.
 
 The design is site-agnostic and OS-portable. Do not encode site names, UI
 copy, or language-specific picker labels into the workflow. Use generic

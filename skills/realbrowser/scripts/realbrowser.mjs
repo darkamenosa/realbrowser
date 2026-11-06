@@ -86,7 +86,7 @@ const GROUPS = {
   handle: ["create", "list", "release"],
   read: ["observe", "size", "tree", "snapshot", "query", "query-selector", "items", "item", "text", "html", "links", "forms", "url", "is", "autocomplete", "overlay"],
   wait: ["ready", "selector", "text", "url", "load", "network"],
-  action: ["state", "root", "click", "fill", "type", "press", "key", "upload", "submit", "hover", "select", "scroll", "drag"],
+  action: ["state", "root", "click", "fill", "type", "press", "key", "upload", "submit", "hover", "select", "scroll", "drag", "tap"],
   screenshot: ["capture", "full", "area", "device", "responsive"],
   console: ["list", "get", "clear", "capture"],
   network: ["list", "get", "body", "export", "clear", "capture"],
@@ -143,6 +143,7 @@ const VALUE_FLAGS = new Set([
   "--session", "--label", "--timeout", "--max-chars", "--limit", "--selector",
   "--root", "--input", "--input-ref", "--element", "--trigger", "--trigger-ref", "--text", "--value-file", "--from", "--return", "--trace",
   "--to", "--to-ref", "--to-selector", "--to-point", "--from-point", "--by", "--button", "--steps", "--hold",
+  "--point", "--offset", "--count",
   "--devices", "--viewport", "--format", "--quality", "--max-side", "--max-bytes",
   "--dir", "--download-dir", "--filter", "--method", "--status", "--type",
   "--include", "--request-file", "--response-file", "--binary", "--header",
@@ -172,7 +173,7 @@ const BOOLEAN_FLAGS = new Set([
   "--full-stdout", "--dry-run", "--dispatch-events", "--visual-stable",
   "--screenshot", "--annotate-refs", "--annotate", "--labels", "--mobile-emulation", "--mobile",
   "--no-skeletons", "--latest", "--active", "--stdin", "--final", "--cdp",
-  "--system", "--deep", "--allow-file-dialog", "--no-normalize", "--normalize", "--bypass-overlay",
+  "--system", "--deep", "--touch", "--allow-file-dialog", "--no-normalize", "--normalize", "--bypass-overlay",
   "--require-change",
   "--take-lease", "--all", "--global",
   "--mine", "--owned", "--force-new", "--allow-user-tab-mutation", "--close",
@@ -426,6 +427,7 @@ function validateActionArgs(command, args = [], flags = {}) {
   if ((command === "press" || command === "key") && !args.join(" ")) throw usage(`action ${command} requires <key>`);
   if (command === "upload") validateUploadArgs(args, flags);
   if (command === "drag") validateDragArgs(args, flags);
+  if (command === "tap") validateTapArgs(args, flags);
 }
 
 function validateUploadArgs(args = [], flags = {}) {
@@ -445,6 +447,13 @@ function validateDragArgs(args = [], flags = {}) {
   if (!fromPoint && !fromTarget) throw usage("action drag requires <from-ref|selector> or --from-point <x,y>");
   if (destinationCount < 1) throw usage("action drag requires --to <ref|selector>, --to-point <x,y>, --by <dx,dy>, or a second positional target");
   if (destinationCount > 1) throw usage("action drag accepts only one destination: --to, --to-point, or --by");
+}
+
+function validateTapArgs(args = [], flags = {}) {
+  const target = args[0] || flags.ref || flags.selector;
+  if (!flags.point && !target) throw usage("action tap requires --point <x,y>, a positional x,y, or <ref|selector>");
+  if (flags.point && target) throw usage("action tap accepts either --point <x,y> or <ref|selector>, not both");
+  if (flags.offset && (flags.point || isPointToken(target))) throw usage("action tap --offset applies only to a <ref|selector> target");
 }
 
 function validateNetworkArgs(command, args = [], flags = {}) {
@@ -3601,6 +3610,60 @@ BrowserDaemon.prototype.action = async function action(command, args, flags) {
       duration: spec.duration,
       hold: spec.hold,
       button: spec.button,
+    });
+  }
+  if (command === "tap") {
+    const spec = tapArgs(args, flags, tab.targetId, this);
+    let at;
+    let hit = null;
+    try {
+      if (spec.point) {
+        at = { point: spec.point, entry: { center: spec.point, kind: "point" } };
+      } else {
+        // Like a real user: tap whatever is on top at that spot (video overlays,
+        // custom controls), so topmost/pointer checks are reported, not enforced.
+        at = await this.callFunction(tab.targetId, dragPointFunction, [spec.selector, {
+          ...actionOptions(args, flags),
+          role: "tap target",
+          scroll: true,
+          requireEnabled: false,
+          requirePointer: false,
+          requireTopmost: false,
+        }], { timeoutMs: flags.timeout || DEFAULT_TIMEOUT });
+        if (spec.offset) at.point = { x: at.point.x + spec.offset.x, y: at.point.y + spec.offset.y };
+      }
+      const viewport = preflight?.viewport;
+      if (viewport && (at.point.x < 0 || at.point.y < 0 || at.point.x >= viewport.width || at.point.y >= viewport.height)) {
+        throw new CliError(`tap point ${at.point.x},${at.point.y} is outside the ${viewport.width}x${viewport.height} viewport`, {
+          code: "action_guard",
+          exitCode: 5,
+          next: ["realbrowser screenshot capture -t <target>", "realbrowser read size -t <target>"],
+        });
+      }
+      hit = await this.callFunction(tab.targetId, tapHitFunction, [at.point]).catch(() => null);
+      await withFileChooserGuard(this, tab.targetId, {
+        allowFileDialog: Boolean(flags.allowFileDialog),
+        label: spec.label === "point" ? `point ${at.point.x},${at.point.y}` : spec.label,
+        guardMs: preflight.visibility === "visible" && preflight.hasFocus ? FILE_CHOOSER_CLICK_GUARD_MS : FILE_CHOOSER_BACKGROUND_CLICK_GUARD_MS,
+      }, () => (spec.touch ? dispatchTouchTap : dispatchMouseTap)(this, tab.targetId, at.point, spec));
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw new CliError(cleanActionErrorMessage(error), {
+        code: "action_guard",
+        exitCode: 5,
+        next: ["realbrowser action state -t <target> --root active --compact"],
+      });
+    }
+    return result({
+      text: `${spec.count > 1 ? `tapped x${spec.count}` : "tapped"} ${spec.label} at ${at.point.x},${at.point.y}${spec.touch ? " (touch)" : ""}${hit?.label ? ` -> ${hit.label}` : ""}`,
+      target: tab,
+      preflight,
+      at: { ...at.entry, point: at.point },
+      hit,
+      count: spec.count,
+      hold: spec.hold,
+      button: spec.touch ? undefined : spec.button,
+      touch: spec.touch,
     });
   }
   if (command === "fill" || command === "select") {
@@ -7342,6 +7405,86 @@ async function dispatchMouseDrag(daemon, targetId, from, to, opts = {}) {
   await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button, buttons: 0, clickCount: 1, pointerType: "mouse" });
 }
 
+// Press and release at one point with no movement in between. Repeated taps
+// carry an increasing clickCount so pages see dblclick on count 2.
+async function dispatchMouseTap(daemon, targetId, point, opts = {}) {
+  const { x, y } = point;
+  const button = opts.button || "left";
+  const buttons = mouseButtonsFor(button);
+  const count = opts.count || 1;
+  await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0, pointerType: "mouse" });
+  for (let i = 1; i <= count; i += 1) {
+    await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, buttons, clickCount: i, pointerType: "mouse" });
+    if (opts.hold > 0) await sleep(opts.hold);
+    await daemon.sendToTarget(targetId, "Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, buttons: 0, clickCount: i, pointerType: "mouse" });
+    if (i < count && opts.interval > 0) await sleep(opts.interval);
+  }
+}
+
+async function dispatchTouchTap(daemon, targetId, point, opts = {}) {
+  const touchPoints = [{ x: point.x, y: point.y, id: 0, radiusX: 1, radiusY: 1, force: 1 }];
+  const count = opts.count || 1;
+  for (let i = 1; i <= count; i += 1) {
+    await daemon.sendToTarget(targetId, "Input.dispatchTouchEvent", { type: "touchStart", touchPoints });
+    if (opts.hold > 0) await sleep(opts.hold);
+    await daemon.sendToTarget(targetId, "Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    if (i < count && opts.interval > 0) await sleep(opts.interval);
+  }
+}
+
+// Runs a coordinate dispatch with the same native file chooser protection as
+// action click: if the input opens a picker, fail instead of leaving a native
+// dialog in the user's browser (unless --allow-file-dialog).
+async function withFileChooserGuard(daemon, targetId, opts, dispatch) {
+  if (opts.allowFileDialog) return dispatch();
+  const sessionId = await daemon.attach(targetId);
+  let interceptEnabled = false;
+  try {
+    await daemon.cdp.send("Page.setInterceptFileChooserDialog", { enabled: true }, sessionId, 2_000);
+    interceptEnabled = true;
+    const chooserPromise = daemon.cdp.waitFor(
+      "Page.fileChooserOpened",
+      (_params, message) => message.sessionId === sessionId,
+      opts.guardMs || FILE_CHOOSER_CLICK_GUARD_MS,
+    );
+    chooserPromise.catch(() => {});
+    await dispatch();
+    const chooser = await chooserPromise.catch(() => null);
+    if (chooser?.params) {
+      throw new CliError(`Tap at ${opts.label || "target"} would open a native file chooser; use action upload --trigger-ref <ref> <file> or pass --allow-file-dialog`, {
+        code: "file_dialog_would_open",
+        exitCode: 5,
+        next: [
+          "realbrowser action state -t <target> --root active --compact --screenshot --annotate-refs",
+          "realbrowser action upload -t <target> --root active --trigger-ref <ref> <file>",
+        ],
+      });
+    }
+  } finally {
+    if (interceptEnabled) {
+      await daemon.cdp.send("Page.setInterceptFileChooserDialog", { enabled: false }, sessionId, 2_000).catch(() => {});
+    }
+  }
+}
+
+// Describes the element that will receive a tap at a viewport point, so the
+// caller can confirm the hit (e.g. a player overlay rather than the video).
+function tapHitFunction(point) {
+  const el = document.elementFromPoint(point.x, point.y);
+  if (!el) return null;
+  const tag = el.tagName.toLowerCase();
+  const id = el.id ? `#${el.id}` : "";
+  const cls = !id && typeof el.className === "string" && el.className.trim() ? `.${el.className.trim().split(/\s+/).slice(0, 2).join(".")}` : "";
+  const name = (el.getAttribute("aria-label") || el.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 60);
+  return {
+    tag,
+    id: el.id || undefined,
+    name: name || undefined,
+    frame: tag === "iframe" || tag === "frame" ? true : undefined,
+    label: `${tag}${id}${cls}${name ? ` "${name}"` : ""}${tag === "iframe" ? " (inside frame)" : ""}`,
+  };
+}
+
 async function callAndDispatchMouseClickWithFileChooserGuard(daemon, targetId, selector, options = {}, opts = {}) {
   if (opts.allowFileDialog) {
     const payload = await daemon.callFunction(targetId, clickFunction, [selector, { ...options, allowFileDialog: true }], { timeoutMs: opts.timeoutMs || DEFAULT_TIMEOUT });
@@ -7538,6 +7681,32 @@ function dragArgs(args, flags, targetId, daemon) {
     steps: boundedInteger(flags.steps || 12, "steps", 1, 200),
     duration: boundedInteger(flags.duration || 250, "duration", 0, 60_000),
     hold: boundedInteger(flags.hold || 50, "hold", 0, 10_000),
+  };
+}
+
+function isPointToken(value) {
+  return /^\s*-?\d+(?:\.\d+)?\s*[,x:]\s*-?\d+(?:\.\d+)?\s*$/i.test(String(value || ""));
+}
+
+function tapArgs(args, flags, targetId, daemon) {
+  const token = args[0] || flags.ref || flags.selector || "";
+  const pointSource = flags.point || (isPointToken(token) ? token : "");
+  if (!pointSource && !token) throw usage("action tap requires --point <x,y>, a positional x,y, or <ref|selector>");
+  if (flags.point && token) throw usage("action tap accepts either --point <x,y> or <ref|selector>, not both");
+  const point = pointSource ? parsePoint(pointSource, "--point") : null;
+  if (flags.offset && point) throw usage("action tap --offset applies only to a <ref|selector> target");
+  const touch = Boolean(flags.touch);
+  if (touch && flags.button && flags.button !== "left") throw usage("action tap --touch cannot use --button");
+  return {
+    point,
+    selector: point ? "" : daemon.selectorFor(targetId, token),
+    offset: flags.offset ? parsePoint(flags.offset, "--offset") : null,
+    label: point ? "point" : String(token),
+    button: parseMouseButton(flags.button || "left"),
+    count: boundedInteger(flags.count || 1, "count", 1, 3),
+    hold: boundedInteger(flags.hold || 0, "hold", 0, 10_000),
+    interval: 80,
+    touch,
   };
 }
 
@@ -9075,6 +9244,10 @@ All actions require -t/--target or --handle.
   action drag -t app b1 --to-point 320,180
   action drag -t app --from-point 20,40 --to-point 300,40
   action drag -t app b1 --by 80,0 --steps 16 --duration 400
+  action tap -t app --point 320,180
+  action tap -t app 320,180 --count 2
+  action tap -t app e3 --offset 0,-40
+  action tap -t app --point 200,300 --touch
   action upload -t app --root active --input-ref e2 ~/Downloads/file.png
   action upload -t app --root active --trigger-ref b7 ~/Downloads/file.png
   action submit -t app --root active --text "Submit"
@@ -9096,6 +9269,16 @@ All actions require -t/--target or --handle.
   and destinations are viewport CSS pixels or current refs/selectors. Use
   --to <ref|selector>, --to-point <x,y>, or --by <dx,dy>. Options:
   --steps <n>, --duration <ms>, --hold <ms>, --button left|middle|right.
+
+  Tap presses and releases at one point with no movement, for coordinate UI
+  such as video players and canvases. Target: --point <x,y> (or positional
+  x,y) in viewport CSS pixels, or a ref/selector (its center, shifted by
+  --offset <dx,dy>). It hits whatever is topmost there, like a real user.
+  Options: --count 1-3 (2 = double tap/dblclick), --hold <ms>,
+  --button left|middle|right, --touch (touch events instead of mouse).
+  Output names the element hit at the point. Points outside the viewport are
+  rejected, and a tap that would open a native file chooser fails unless
+  --allow-file-dialog is passed.
 
   action state --screenshot captures the visible active root/viewport. Use
   screenshot area/full only when a tall artifact is explicitly needed.
@@ -9326,6 +9509,18 @@ async function runSelfTest() {
   assertThrows(() => validateBeforeContext(parseCli(["action", "drag", "-t", "app", "b1"])), "action drag destination is validated before context attach");
   assert(parsePoint("12.5,-3", "point").x === 12.5 && parsePoint("12.5,-3", "point").y === -3, "drag point parser accepts decimals");
   assert(mouseButtonsFor(parseMouseButton("right")) === 2, "drag button parser");
+  const tapPoint = parseCli(["action", "tap", "-t", "app", "--point", "320,180", "--count", "2", "--touch"]);
+  assert(tapPoint.command === "tap" && tapPoint.flags.point === "320,180" && tapPoint.flags.count === "2" && tapPoint.flags.touch === true, "tap point parser");
+  const tapRef = parseCli(["action", "tap", "-t", "app", "e3", "--offset", "0,-40"]);
+  assert(tapRef.args[0] === "e3" && tapRef.flags.offset === "0,-40", "tap ref parser");
+  assertThrows(() => validateBeforeContext(parseCli(["action", "tap", "-t", "app"])), "action tap target is validated before context attach");
+  assertThrows(() => validateBeforeContext(parseCli(["action", "tap", "-t", "app", "e3", "--point", "1,2"])), "action tap rejects point plus ref");
+  assertThrows(() => validateBeforeContext(parseCli(["action", "tap", "-t", "app", "10,20", "--offset", "1,1"])), "action tap rejects offset with point");
+  assert(isPointToken("320,180") && isPointToken("12.5x-3") && !isPointToken("e3") && !isPointToken("#player"), "tap point token detection");
+  const tapFakeDaemon = { selectorFor: (_t, ref) => `sel:${ref}` };
+  const tapSpec = tapArgs(["320,180"], {}, "t", tapFakeDaemon);
+  assert(tapSpec.point.x === 320 && tapSpec.point.y === 180 && tapSpec.count === 1 && !tapSpec.selector, "tap positional point spec");
+  assert(tapArgs(["e3"], { offset: "0,-40" }, "t", tapFakeDaemon).selector === "sel:e3", "tap ref spec resolves selector");
   const keyAction = parseCli(["action", "key", "-t", "app", "Escape"]);
   assert(keyAction.command === "key" && keyAction.args[0] === "Escape", "key alias parser");
   const typeRef = parseCli(["action", "type", "-t", "app", "e1", "hello"]);
@@ -9524,6 +9719,13 @@ async function runSelfTest() {
   assert(sigSrc.includes('"fetch"') && sigSrc.includes('"xmlhttprequest"'),
     "pageStateSignature filters resource entries to fetch + xmlhttprequest only");
   assert(GROUPS.action.includes("drag"), "action group includes drag");
+  assert(GROUPS.action.includes("tap"), "action group includes tap");
+  const tapDispatchSrc = dispatchMouseTap.toString();
+  assert(tapDispatchSrc.includes("mousePressed") && tapDispatchSrc.includes("mouseReleased") && !tapDispatchSrc.includes("steps"),
+    "dispatchMouseTap presses and releases in place");
+  assert(withFileChooserGuard.toString().includes("Page.setInterceptFileChooserDialog") && withFileChooserGuard.toString().includes("file_dialog_would_open"),
+    "tap dispatch is wrapped in the file chooser guard");
+  assert(dispatchTouchTap.toString().includes("touchStart") && dispatchTouchTap.toString().includes("touchEnd"), "dispatchTouchTap sends touch events");
   assert(typeof dragPointFunction === "function" && typeof dispatchMouseDrag === "function",
     "drag helpers are defined");
   const dragDispatchSrc = dispatchMouseDrag.toString();

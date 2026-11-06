@@ -41,7 +41,7 @@ tab         list/select/ensure/new/navigate/label/focus/close/handoff/resume
 handle      create/list/release
 read        observe/size/snapshot/query/query-selector/items/item/text/html/links/forms/url/is
 wait        ready/selector/text/url/load/network
-action      state/root/click/fill/type/press/key/upload/submit/hover/select/drag
+action      state/root/click/fill/type/press/key/upload/submit/hover/select/drag/tap
 screenshot  capture/full/area/device/responsive
 console     list/get/clear/capture
 network     list/get/body/export/clear/capture
@@ -258,6 +258,10 @@ action drag -t app b1 --to b2
 action drag -t app b1 --to-point 320,180
 action drag -t app --from-point 20,40 --to-point 300,40
 action drag -t app b1 --by 80,0 --steps 16 --duration 400
+action tap -t app --point 320,180
+action tap -t app 320,180 --count 2
+action tap -t app e3 --offset 0,-40
+action tap -t app --point 200,300 --touch
 action state -t app --root active --compact --screenshot --annotate-refs
 action upload -t app --root active --input-ref e2 ~/Downloads/file.png
 action upload -t app --root active --trigger-ref b7 ~/Downloads/file.png
@@ -274,6 +278,21 @@ destination. Sources and destinations are viewport CSS pixels or current
 refs/selectors. Use `--to <ref|selector>`, `--to-point <x,y>`, or `--by
 <dx,dy>`. Optional timing knobs are `--steps <n>`, `--duration <ms>`, `--hold
 <ms>`, and `--button left|middle|right`.
+
+`tap` presses and releases at a single point with no pointer movement in
+between: the same as a drag that starts and ends on one point, without the
+workaround. Use it for coordinate-driven UI such as video players, canvases,
+and maps. The target is `--point <x,y>` (or a positional `x,y`) in viewport CSS
+pixels, or a ref/selector, which is tapped at its center plus an optional
+`--offset <dx,dy>`. The event hits whatever is topmost at that point, as a real
+user's tap would, so an overlay above a `<video>` receives it. Options:
+`--count 1-3` (2 sends a double tap with `dblclick`), `--hold <ms>`,
+`--button left|middle|right`, and `--touch` to send touch events instead of
+mouse events. The output names the element that was hit at the point (for
+example `-> div.vjs-overlay "Video overlay"`), which confirms where the tap
+landed. A point outside the viewport is rejected instead of missing silently.
+Like `click`, a tap that would open a native file chooser fails with
+`file_dialog_would_open` unless `--allow-file-dialog` is passed.
 
 `submit --text` is exact-match by default to avoid clicking wrapper controls that
 only contain the requested label as part of a longer label. If an exact label is
