@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 - 2026-11-06
 
 Added:
 
@@ -11,6 +11,21 @@ Added:
   workaround for video players and canvases. It reports the element hit at
   the point, rejects points outside the viewport, and applies the same native
   file chooser guard as `action click` (`--allow-file-dialog` to opt out).
+
+Changed:
+
+- Documented `action tap` in the skill guide, command reference, and workflow
+  reference.
+- The runtime and Claude plugin versions are now `0.3.2`.
+
+Validated:
+
+- `node --check skills/realbrowser/scripts/realbrowser.mjs`
+- `skills/realbrowser/scripts/realbrowser self-test`
+- `git diff --check`
+- Anonymous headless tap smoke tests against temporary local pages: point,
+  positional, ref with offset, double tap, touch, out-of-viewport rejection,
+  file chooser guard, and a cross-site iframe.
 
 ## 0.3.1 - 2026-06-29
 
